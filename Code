@@ -1,0 +1,34 @@
+import cv2
+from ultralytics import YOLO
+
+# Carrega o modelo YOLOv8 (troque pelo seu modelo treinado, ex: 'best.pt')
+model = YOLO(r"C:\Users\pedro\Desktop\EPI_detection\runs\detect\treino_epi_yolo11x3\weights\best.pt")
+
+# Abre a câmera
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("Não foi possível abrir a câmera")
+    exit()
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Falha ao capturar imagem")
+        break
+
+    # Faz a detecção com YOLO
+    results = model(frame)
+
+    # Desenha as detecções na imagem
+    annotated_frame = results[0].plot()
+
+    # Mostra o vídeo com as detecções
+    cv2.imshow("YOLOv8 Camera", annotated_frame)
+
+    # Sai do loop ao apertar 'q'
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
