@@ -1,0 +1,27 @@
+from ultralytics import YOLO
+from PIL import Image
+import requests
+from io import BytesIO
+
+# 🔹 Carrega seu primeiro modelo treinado
+model = YOLO(r"C:\Users\pedro\Desktop\EPI_detection\runs\detect\treino_epi_yolo11x3\weights\best.pt")  # caminho do modelo
+
+# 🔹 URL da imagem que você quer testar
+image_url = "https://www.danny.com.br/public/files/xycGd7LatSHeHYXcshw99IxMzK2iMNZdgBbHLCyZ.png"
+
+# 🔹 Baixa a imagem em memória
+response = requests.get(image_url)
+img = Image.open(BytesIO(response.content)).convert("RGB")
+
+# 🔹 Faz a inferência com o primeiro modelo
+results = model(img)  # results é uma lista
+
+# 🔹 Mostra o resultado do primeiro modelo
+results[0].show()  # acessa o primeiro item da lista
+
+# 🔹 Acessa os dados das detecções do primeiro modelo
+r = results[0]
+print("Modelo 1:")
+print("Caixas:", r.boxes.xyxy)   # coordenadas [x1, y1, x2, y2]
+print("Confiança:", r.boxes.conf) # confiança de cada detecção
+print("Classes:", r.boxes.cls)    # classe detectada
