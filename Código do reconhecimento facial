@@ -1,0 +1,140 @@
+import cv2
+import pickle
+import face_recognition
+import time
+import paho.mqtt.client as mqtt
+import ssl
+from datetime import datetime
+
+# ------------------------------------------------
+# Configurações HiveMQ / MQTT
+# ------------------------------------------------
+MQTT_HOST = "#colocar o seu#"
+MQTT_PORT = #sua porta#
+MQTT_USER = "#seu usuário#"
+MQTT_PASS = "#sua senha#"
+TOPIC_BASE = "#seu tópico#"
+COOLDOWN = 15.0   # segundos entre novas publicações para evitar spam
+
+# ------------------------------------------------
+# Funções MQTT
+# ------------------------------------------------
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("✅ Conectado ao HiveMQ")
+    else:
+        print("⚠️ Erro ao conectar. Código:", rc)
+
+def setup_mqtt():
+    client = mqtt.Client()
+    client.username_pw_set(MQTT_USER, MQTT_PASS)
+    client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
+    client.on_connect = on_connect
+    client.connect(MQTT_HOST, MQTT_PORT)
+    client.loop_start()
+    return client
+
+def mqtt_publish(client, topic_suffix, message):
+    topic = f"{TOPIC_BASE}/{topic_suffix}"
+    client.publish(topic, message)
+    print(f"📤 Publicado -> {topic}: {message}")
+
+# Inicia cliente MQTT
+mqtt_client = setup_mqtt()
+
+# ------------------------------------------------
+# Configurações de reconhecimento facial
+# ------------------------------------------------
+ENCODINGS_FILE = "encodings.pkl"
+CAMERA_INDEX = 0
+
+# Carrega encodings
+with open(ENCODINGS_FILE, "rb") as f:
+    data = pickle.load(f)
+known_encodings = data["encodings"]
+known_names = data["names"]
+
+# Abre câmera
+cap = cv2.VideoCapture(CAMERA_INDEX)
+if not cap.isOpened():
+    raise SystemExit("Não foi possível abrir a câmera")
+
+print("Pressione 'q' para sair.")
+
+# ------------------------------------------------
+# Controle de entradas e saídas
+# ------------------------------------------------
+estado_pessoas = {}   # ex: {"João": {"status": "dentro", "entrada": "10:22:00"}}
+ultimo_envio = time.time()
+
+# ------------------------------------------------
+# Loop principal
+# ------------------------------------------------
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    face_locations = face_recognition.face_locations(rgb_frame)
+    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+    for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+        matches = face_recognition.compare_faces(known_encodings, face_encoding)
+        name = "Desconhecido"
+
+        if True in matches:
+            first_match_index = matches.index(True)
+            name = known_names[first_match_index]
+
+        # Desenha retângulo e nome
+        color = (0, 255, 0) if name != "Desconhecido" else (0, 0, 255)
+        cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+        cv2.putText(frame, name, (left, top - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+        # ------------------------------------------------------------------
+        #  Lógica NOVA: registrar entrada e saída
+        # ------------------------------------------------------------------
+        agora = datetime.now().strftime("%H:%M:%S")
+
+        if name != "Desconhecido" and (time.time() - ultimo_envio > COOLDOWN):
+
+            if name not in estado_pessoas:
+                # ➤ PRIMEIRA DETECÇÃO → ENTRADA
+                estado_pessoas[name] = {"status": "dentro", "entrada": agora}
+                mqtt_publish(mqtt_client, "entrada",
+                             f"{name} entrou às {agora}")
+                print(f"📌 {name} ENTRADA registrada às {agora}")
+
+            else:
+                if estado_pessoas[name]["status"] == "dentro":
+                    # ➤ SEGUNDA DETECÇÃO → SAÍDA
+                    estado_pessoas[name]["status"] = "fora"
+                    estado_pessoas[name]["saida"] = agora
+                    mqtt_publish(mqtt_client, "saida",
+                                 f"{name} saiu às {agora}")
+                    print(f"📌 {name} SAÍDA registrada às {agora}")
+
+                else:
+                    # ➤ Depois da saída → nova ENTRADA
+                    estado_pessoas[name] = {"status": "dentro", "entrada": agora}
+                    mqtt_publish(mqtt_client, "entrada",
+                                 f"{name} entrou novamente às {agora}")
+                    print(f"📌 {name} NOVA ENTRADA às {agora}")
+
+            ultimo_envio = time.time()
+
+        elif name == "Desconhecido" and (time.time() - ultimo_envio > COOLDOWN):
+            mqtt_publish(mqtt_client, "negado",
+                         f"Acesso negado às {agora}")
+            ultimo_envio = time.time()
+
+    cv2.imshow("Reconhecimento Facial", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
