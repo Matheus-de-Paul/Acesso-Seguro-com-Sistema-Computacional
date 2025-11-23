@@ -1,0 +1,30 @@
+import face_recognition
+import pickle
+import os
+
+KNOWN_DIR = r"#caminho da pasta com os rostos#"
+ENCODINGS_FILE = "encodings.pkl"
+
+known_encodings = []
+known_names = []
+
+for root, dirs, files in os.walk(KNOWN_DIR):
+    for filename in files:
+        if filename.endswith((".jpg", ".png")):
+            path = os.path.join(root, filename)
+            image = face_recognition.load_image_file(path)
+            encs = face_recognition.face_encodings(image)
+            if encs:
+                known_encodings.append(encs[0])
+                # usa o nome da pasta como nome da pessoa
+                person_name = os.path.basename(root)
+                known_names.append(person_name)
+            else:
+                print(f"Rosto não detectado em {path}")
+
+data = {"encodings": known_encodings, "names": known_names}
+
+with open(ENCODINGS_FILE, "wb") as f:
+    pickle.dump(data, f)
+
+print(f"Encodings salvos em {ENCODINGS_FILE}")
