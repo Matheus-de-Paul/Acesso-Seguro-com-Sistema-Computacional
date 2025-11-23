@@ -1,0 +1,114 @@
+import time
+import cv2
+from ultralytics import YOLO
+import paho.mqtt.client as mqtt
+import ssl
+
+# ----------------------------
+# Configurações HiveMQ / MQTT
+# ----------------------------
+MQTT_HOST = "#colocar o seu#"
+MQTT_PORT = #sua porta#
+MQTT_USER = "#seu usuário#"
+MQTT_PASS = "#sua senha#"
+TOPIC_BASE = "#seu tópico#"
+
+# ----------------------------
+# Configurações do modelo
+# ----------------------------
+YOLO_MODEL_PATH = r"#caminho do modelo#"
+CAMERA_INDEX = 0
+PPE_THRESHOLD = 2           # número mínimo de EPIs para liberar entrada
+COOLDOWN = 10.0             # tempo mínimo entre novas mensagens (s)
+
+# ----------------------------
+# Funções MQTT
+# ----------------------------
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("✅ Conectado ao HiveMQ com sucesso")
+    else:
+        print("⚠️ Falha ao conectar ao HiveMQ, código:", rc)
+
+def setup_mqtt():
+    client = mqtt.Client()
+    client.username_pw_set(MQTT_USER, MQTT_PASS)
+    client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
+    client.on_connect = on_connect
+    client.connect(MQTT_HOST, MQTT_PORT)
+    client.loop_start()
+    return client
+
+def mqtt_publish(client, topic_suffix, message):
+    topic = f"{TOPIC_BASE}/{topic_suffix}"
+    client.publish(topic, message)
+    print(f"📤 Publicado -> {topic}: {message}")
+
+# ----------------------------
+# Inicializa modelo e MQTT
+# ----------------------------
+model = YOLO(YOLO_MODEL_PATH)
+mqtt_client = setup_mqtt()
+
+# ----------------------------
+# Abre câmera
+# ----------------------------
+cap = cv2.VideoCapture(CAMERA_INDEX)
+if not cap.isOpened():
+    print("❌ Não foi possível abrir a câmera")
+    exit()
+
+last_sent = 0  # para cooldown global
+
+try:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("⚠️ Falha ao capturar imagem")
+            break
+
+        current_time = time.time()
+
+        # --- Detecção YOLO ---
+        results = model(frame, verbose=False)
+        annotated_frame = results[0].plot()
+        detected_class_ids = []
+
+        try:
+            boxes = results[0].boxes
+            if hasattr(boxes, "cls") and boxes.cls is not None:
+                detected_class_ids = [int(c) for c in boxes.cls.cpu().numpy()]
+        except Exception:
+            detected_class_ids = []
+
+        ppe_count = len(detected_class_ids)
+
+        # --- Verifica cooldown e publica MQTT ---
+        if current_time - last_sent >= COOLDOWN:
+            if ppe_count >= PPE_THRESHOLD:
+                mqtt_publish(mqtt_client, "geral", f"Entrada liberada ✅ ({ppe_count} EPIs detectados)")
+                print(f"✅ EPIs detectados ({ppe_count}). Entrada liberada.")
+            else:
+                mqtt_publish(mqtt_client, "geral", f"Acesso negado ❌ ({ppe_count} EPIs detectados)")
+                print(f"❌ EPIs insuficientes ({ppe_count}). Acesso negado.")
+            last_sent = current_time  # atualiza cooldown
+
+        # --- Mostra resultado na tela ---
+        cv2.putText(annotated_frame, f"EPIs detectados: {ppe_count}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+        if current_time - last_sent < COOLDOWN:
+            cv2.putText(annotated_frame, f"Aguardando cooldown...", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+        cv2.imshow("Detecção de EPIs", annotated_frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+except KeyboardInterrupt:
+    print("\n🛑 Interrompido pelo usuário.")
+
+finally:
+    cap.release()
+    cv2.destroyAllWindows()
+    mqtt_client.loop_stop()
+    mqtt_client.disconnect()
