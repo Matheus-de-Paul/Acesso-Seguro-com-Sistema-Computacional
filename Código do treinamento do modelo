@@ -1,0 +1,83 @@
+from ultralytics import YOLO
+import cv2
+import csv
+import time
+import os
+
+# ---------------- CONFIGURAÇÕES ---------------- #
+MODEL_PATH = "yolo11x.pt"  # Modelo base YOLO11x
+DATASET_PATH = r"#caminho do arquivo yaml#"
+CSV_PATH = "registro_epi.csv"
+DEVICE = 0                 # 0 = GPU | 'cpu' para CPU
+IMG_SIZE = 640
+BATCH_SIZE = 4             # Ajuste se a GPU não tiver memória suficiente
+EPOCHS = 50
+WORKERS = 0                # No Windows, 0 evita erro de multiprocessing
+# ----------------------------------------------- #
+
+def init_csv():
+    """Cria CSV se não existir"""
+    if not os.path.exists(CSV_PATH):
+        with open(CSV_PATH, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["timestamp","class","confidence","x1","y1","x2","y2"])
+
+def train_model():
+    """Treina o modelo YOLO11x"""
+    model = YOLO(MODEL_PATH)
+    print("🚀 Iniciando treino YOLO11x...")
+    model.train(
+        data=DATASET_PATH,
+        epochs=EPOCHS,
+        imgsz=IMG_SIZE,
+        batch=BATCH_SIZE,
+        device=DEVICE,
+        workers=WORKERS,
+        name="treino_epi_yolo11x"
+    )
+    print("✅ Treinamento concluído!")
+
+def run_inference():
+    """Abre webcam, detecta EPI e salva no CSV"""
+    model = YOLO("runs/detect/treino_epi_yolo11x3/weights/best.pt")
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        raise RuntimeError("Não consegui abrir a câmera.")
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            results = model.predict(frame, imgsz=IMG_SIZE, conf=0.3)[0]
+
+            # Salvar resultados no CSV
+            if results.boxes is not None and len(results.boxes) > 0:
+                boxes = results.boxes.xyxy.cpu().numpy()
+                classes = results.boxes.cls.cpu().numpy()
+                confs = results.boxes.conf.cpu().numpy()
+
+                with open(CSV_PATH, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    for box, cls, conf in zip(boxes, classes, confs):
+                        x1, y1, x2, y2 = [float(v) for v in box]
+                        cls_name = model.names[int(cls)]
+                        writer.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), cls_name, float(conf), x1, y1, x2, y2])
+
+            # Mostrar na tela
+            annotated_frame = results.plot()
+            cv2.imshow("Detecção EPI", annotated_frame)
+
+            # Sair com 'q'
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+# ------------------ BLOCO PRINCIPAL ------------------ #
+if _name_ == "_main_":
+    init_csv()
+    train_model()
+    run_inference()
